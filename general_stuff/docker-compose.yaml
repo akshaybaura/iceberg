@@ -1,0 +1,95 @@
+version: "3.8"
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    networks:
+      iceberg:
+        aliases:
+          - warehouse.minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+      MINIO_REGION_NAME: us-east-1
+      MINIO_REGION: us-east-1
+      MINIO_DOMAIN: minio
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    container_name: pyiceberg-mc
+    networks:
+      iceberg:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc anonymous set public minio/warehouse;
+      tail -f /dev/null
+      "
+
+  nessie:
+    image: projectnessie/nessie:0.67.0
+    container_name: nessie
+    networks:
+      - iceberg
+    ports:
+      - "19120:19120"
+
+  spark:
+    image: iceberg-python-spark
+    container_name: spark
+    networks:
+      - iceberg
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    volumes:
+      - ./notebooks:/opt/spark/home/iceberg/notebooks
+      - ./warehouse:/opt/spark/home/iceberg/warehouse
+      - ./datasets:/opt/spark/home/iceberg/datasets
+      - ./spark-events:/opt/spark/home/iceberg/spark-events
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - AWS_DEFAULT_REGION=us-east-1
+
+  rest:
+    image: apache/iceberg-rest-fixture
+    container_name: iceberg-rest
+    volumes:
+      - ./log4j2.properties:/app/log4j2.properties
+    networks:
+      - iceberg
+    ports:
+      - "8181:8181"
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://warehouse
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+      - CATALOG_S3_PATH_STYLE_ACCESS=true
+      - LOG4J_CONFIGURATION_FILE=/app/log4j2.properties
+
+
+volumes:
+  minio-data:
+
+networks:
+  iceberg:
+    driver: bridge
